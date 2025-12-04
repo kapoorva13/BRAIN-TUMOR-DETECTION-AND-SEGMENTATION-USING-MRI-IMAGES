@@ -1,0 +1,160 @@
+function brain_mri_tumor_guii
+    % BRAIN MRI TUMOR GUI
+    hFig = figure('Name','Brain MRI Processing','NumberTitle','off',...
+                  'Color',[0.95 0.95 0.95],'Position',[200 200 1100 700]);
+
+    % Data structure
+    data = struct();
+    data.img = [];        % Original image
+    data.imgGray = [];    % Grayscale resized image
+    data.procSize = [256 256]; % Processing size
+
+    % Axes layout
+    axW = 0.28; axH = 0.28;
+    axesPos = [
+        0.04, 0.60, axW, axH;
+        0.36, 0.60, axW, axH;
+        0.68, 0.60, axW, axH;
+        0.36, 0.15, axW, axH;
+    ];
+
+    % Create axes
+    hAxes = gobjects(4,1);
+    for k = 1:size(axesPos,1)
+        hAxes(k) = axes('Parent',hFig,'Position',axesPos(k,:));
+        axis(hAxes(k),'off');
+    end
+
+    % Axes titles
+    title(hAxes(1),'Input image','FontSize',14);
+    title(hAxes(2),'Median filtered','FontSize',14);
+    title(hAxes(3),'Edge detection (Sobel)','FontSize',14);
+    title(hAxes(4),'Segmentation (k-means)','FontSize',14);
+
+    % Buttons
+    btnW = 0.18; btnH = 0.07;
+    btnX = [0.05 0.30 0.55 0.80];
+    btnY = 0.92;
+
+    uicontrol('Style','pushbutton','String','Browse MRI image',...
+        'Units','normalized','Position',[btnX(1) btnY btnW btnH],...
+        'FontSize',11,'Callback',@onBrowse);
+
+    uicontrol('Style','pushbutton','String','Median filtering',...
+        'Units','normalized','Position',[btnX(2) btnY btnW btnH],...
+        'FontSize',11,'Callback',@onMedian);
+
+    uicontrol('Style','pushbutton','String','Edge detection',...
+        'Units','normalized','Position',[btnX(3) btnY btnW btnH],...
+        'FontSize',11,'Callback',@onEdge);
+
+    uicontrol('Style','pushbutton','String','Segmentation',...
+        'Units','normalized','Position',[btnX(4) btnY btnW btnH],...
+        'FontSize',11,'Callback',@onSegment);
+
+    % Status bar
+    hStatus = uicontrol('Style','text','Units','normalized',...
+        'Position',[0.02 0.02 0.96 0.05],'String','Ready',...
+        'BackgroundColor',[0.9 0.9 0.9],'FontSize',11,'HorizontalAlignment','left');
+
+    %% Callback Functions
+
+    function onBrowse(~,~)
+        [file,path] = uigetfile({'*.jpg;*.png;*.tif;*.bmp','Image Files'},'Select an MRI image');
+        if isequal(file,0)
+            set(hStatus,'String','No file selected.');
+            return;
+        end
+        fullpath = fullfile(path,file);
+        I = imread(fullpath);
+        data.img = I;
+        set(hStatus,'String',['Loaded: ' file]);
+
+        % Display input
+        axes(hAxes(1));
+        imshow(I,[],'Parent',hAxes(1));
+        title(hAxes(1),'Input image','FontSize',14);
+
+        % Convert to grayscale
+        if size(I,3) > 1
+            gray = rgb2gray(I);
+        else
+            gray = I;
+        end
+        gray = im2double(gray);
+        gray = imresize(gray, data.procSize);
+        data.imgGray = gray;
+
+        % Clear other axes
+        for i = 2:4
+            cla(hAxes(i)); 
+            axis(hAxes(i),'off');
+        end
+    end
+
+    function onMedian(~,~)
+        if isempty(data.imgGray)
+            set(hStatus,'String','Load an image first (Browse).');
+            return;
+        end
+        set(hStatus,'String','Applying median filter...');
+        med = medfilt2(data.imgGray, [3 3]);
+        axes(hAxes(2));
+        imshow(med,[],'Parent',hAxes(2));
+        title(hAxes(2),'Median filtered','FontSize',14);
+        data.median = med;
+        set(hStatus,'String','Median filter done.');
+    end
+
+    function onEdge(~,~)
+        if isempty(data.imgGray)
+            set(hStatus,'String','Load an image first (Browse).');
+            return;
+        end
+        set(hStatus,'String','Computing Sobel edges...');
+        imgSmooth = imgaussfilt(data.imgGray, 1);
+        sx = [-1 0 1; -2 0 2; -1 0 1];
+        sy = sx';
+        Gx = imfilter(imgSmooth, sx, 'replicate');
+        Gy = imfilter(imgSmooth, sy, 'replicate');
+        G = sqrt(Gx.^2 + Gy.^2);
+        G = mat2gray(G);
+        edgeBW = imbinarize(G, graythresh(G));
+
+        axes(hAxes(3));
+        imshow(edgeBW,'Parent',hAxes(3));
+        title(hAxes(3),'Edge detection (Sobel)','FontSize',14);
+        data.edgeBW = edgeBW;
+        set(hStatus,'String','Edge detection done.');
+    end
+
+    function onSegment(~,~)
+        if isempty(data.imgGray)
+            set(hStatus,'String','Load an image first (Browse).');
+            return;
+        end
+        set(hStatus,'String','Performing k-means segmentation...');
+        I = data.imgGray;
+        pixels = I(:);
+        K = 3;
+        rng(1);
+        [clusterIdx, clusterCenters] = kmeans(pixels, K, 'Replicates', 3, 'MaxIter', 200);
+        segImg = reshape(clusterIdx, size(I));
+        [~, brightCluster] = max(clusterCenters);
+        segTumor = segImg == brightCluster;
+        segTumor = imopen(segTumor, strel('disk',3));
+        segTumor = imfill(segTumor,'holes');
+        segTumor = bwareaopen(segTumor, 80);
+
+        axes(hAxes(4));
+        imshow(label2rgb(segImg),'Parent',hAxes(4));
+        title(hAxes(4),'Segmentation (k-means)','FontSize',14);
+        hold(hAxes(4),'on');
+        h = imshow(segTumor);
+        set(h,'AlphaData',0.4);  % semi-transparent overlay
+        hold(hAxes(4),'off');
+
+        data.segTumor = segTumor;
+        set(hStatus,'String','Segmentation done.');
+    end
+end
